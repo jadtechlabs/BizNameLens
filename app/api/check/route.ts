@@ -1,3 +1,4 @@
+import { checkBotId } from "botid/server";
 import { NextRequest, NextResponse } from "next/server";
 import { applyIndustryRelevance, hasHighRelevanceTrademark, trademarkRiskPenalty } from "../../../lib/industry-risk";
 import { checkDomains } from "../../../lib/providers/domains";
@@ -5,7 +6,8 @@ import { checkSocialHandles } from "../../../lib/providers/social";
 import { searchTrademarks } from "../../../lib/providers/trademarks";
 import { searchVirginiaRegistry } from "../../../lib/providers/virginia";
 import type { DomainResult, RegistryResult, SocialResult, TrademarkResult } from "../../../lib/providers/types";
-import { applyUsageCookies, consumeSearch } from "../../../lib/usage";
+import { clearTurnstileCookie, readTurnstileToken, verifyTurnstileToken } from "../../../lib/turnstile";
+import { applyUsageCookies, consumeSearch, getUsageStatus } from "../../../lib/usage";
 
 export const runtime = "nodejs";
 
@@ -95,7 +97,30 @@ function buildRecommendation(name: string, industry: string, registry: RegistryR
   return `${name} has a promising early screening profile for ${industry} from the currently connected sources. Confirm the official Virginia SCC result and review the underlying USPTO records before committing money to the brand.`;
 }
 
+function jsonWithClearedTurnstile(body: object, status: number) {
+  const response = NextResponse.json(body, { status });
+  clearTurnstileCookie(response);
+  return response;
+}
+
 export async function POST(request: NextRequest) {
+  try {
+    const bot = await checkBotId();
+    if (bot.isBot) {
+      return NextResponse.json(
+        { error: "Automated traffic is not allowed on the name-check endpoint.", code: "BOT_DETECTED" },
+        { status: 403 },
+      );
+    }
+  } catch {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        { error: "Bot protection is temporarily unavailable. Please try again.", code: "BOT_PROTECTION_UNAVAILABLE" },
+        { status: 503 },
+      );
+    }
+  }
+
   const body = await request.json().catch(() => ({}));
   const name = normalizeName(String(body?.name ?? ""));
   const industry = normalizeName(String(body?.industry ?? "Other"));
@@ -110,9 +135,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Enter a business name using letters or numbers." }, { status: 400 });
   }
 
-  let usage;
+  let currentUsage;
   try {
-    usage = consumeSearch(request);
+    currentUsage = getUsageStatus(request);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Usage tracking is unavailable." },
@@ -120,14 +145,61 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (!usage.allowed) {
+  if (currentUsage.status.paywall) {
     return NextResponse.json(
+      {
+        error: "You have used all 10 free business-name searches.",
+        code: "FREE_LIMIT_REACHED",
+        usage: currentUsage.status,
+      },
+      { status: 402 },
+    );
+  }
+
+  if (currentUsage.status.challengeRequired) {
+    const turnstileToken = readTurnstileToken(request);
+    if (!turnstileToken) {
+      return NextResponse.json(
+        {
+          error: "Complete the human verification to continue.",
+          code: "HUMAN_VERIFICATION_REQUIRED",
+          usage: currentUsage.status,
+        },
+        { status: 428 },
+      );
+    }
+
+    const human = await verifyTurnstileToken(request, turnstileToken);
+    if (!human.ok) {
+      return jsonWithClearedTurnstile(
+        {
+          error: human.reason,
+          code: "HUMAN_VERIFICATION_FAILED",
+          usage: currentUsage.status,
+        },
+        403,
+      );
+    }
+  }
+
+  let usage;
+  try {
+    usage = consumeSearch(request);
+  } catch (error) {
+    return jsonWithClearedTurnstile(
+      { error: error instanceof Error ? error.message : "Usage tracking is unavailable." },
+      500,
+    );
+  }
+
+  if (!usage.allowed) {
+    return jsonWithClearedTurnstile(
       {
         error: "You have used all 10 free business-name searches.",
         code: "FREE_LIMIT_REACHED",
         usage: usage.status,
       },
-      { status: 402 },
+      402,
     );
   }
 
@@ -183,5 +255,6 @@ export async function POST(request: NextRequest) {
   });
 
   applyUsageCookies(response, usage);
+  if (currentUsage.status.challengeRequired) clearTurnstileCookie(response);
   return response;
 }
