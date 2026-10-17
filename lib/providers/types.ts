@@ -1,6 +1,7 @@
 export type ProviderState = "ok" | "partial" | "unconfigured" | "unavailable";
 
 export type MatchStrength = "exact" | "similar";
+export type IndustryRelevance = "high" | "medium" | "low" | "unknown";
 
 export type RegistryMatch = {
   name: string;
@@ -33,6 +34,8 @@ export type TrademarkMatch = {
   goodsAndServices?: string;
   strength: MatchStrength;
   detailUrl?: string;
+  industryRelevance?: IndustryRelevance;
+  relevanceReasons?: string[];
 };
 
 export type TrademarkResult = {
