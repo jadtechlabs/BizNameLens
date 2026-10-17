@@ -5,6 +5,9 @@ import { checkSocialHandles } from "../../../lib/providers/social";
 import { searchTrademarks } from "../../../lib/providers/trademarks";
 import { searchVirginiaRegistry } from "../../../lib/providers/virginia";
 import type { DomainResult, RegistryResult, SocialResult, TrademarkResult } from "../../../lib/providers/types";
+import { applyUsageCookies, consumeSearch } from "../../../lib/usage";
+
+export const runtime = "nodejs";
 
 function normalizeName(value: string) {
   return value.trim().replace(/\s+/g, " ").slice(0, 80);
@@ -107,6 +110,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Enter a business name using letters or numbers." }, { status: 400 });
   }
 
+  let usage;
+  try {
+    usage = consumeSearch(request);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Usage tracking is unavailable." },
+      { status: 500 },
+    );
+  }
+
+  if (!usage.allowed) {
+    return NextResponse.json(
+      {
+        error: "You have used all 10 free business-name searches.",
+        code: "FREE_LIMIT_REACHED",
+        usage: usage.status,
+      },
+      { status: 402 },
+    );
+  }
+
   const candidateDomains = [
     `${stem}.com`,
     `get${stem}.com`,
@@ -126,7 +150,7 @@ export async function POST(request: NextRequest) {
   const score = scoreName(name, domains, registry, trademarks, social);
   const risk = riskLabel(score, registry, trademarks);
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     name,
     industry,
     state,
@@ -137,6 +161,7 @@ export async function POST(request: NextRequest) {
     registry,
     trademarks,
     social,
+    usage: usage.status,
     checkedAt: new Date().toISOString(),
     sources: {
       virginiaScc: "https://cis.scc.virginia.gov/EntitySearch/Index",
@@ -156,4 +181,7 @@ export async function POST(request: NextRequest) {
       score: "The BizName Score is a preliminary screening indicator. Industry relevance can change the weight of trademark candidates, but the score is not a legal opinion or a percentage chance of trademark approval.",
     },
   });
+
+  applyUsageCookies(response, usage);
+  return response;
 }
