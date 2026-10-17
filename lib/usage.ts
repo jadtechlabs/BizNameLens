@@ -3,6 +3,7 @@ import type { NextRequest, NextResponse } from "next/server";
 import { PLANS } from "./plans";
 
 export const USAGE_COOKIE = "bnl_usage";
+export const CAPTCHA_AFTER_FREE_SEARCHES = 3;
 const COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
 
 type UsagePayload = {
@@ -20,6 +21,8 @@ export type UsageStatus = {
   cadence: "lifetime";
   period: "lifetime";
   paywall: boolean;
+  challengeRequired: boolean;
+  challengeAfter: number;
 };
 
 type Resolution = {
@@ -60,6 +63,7 @@ function readPayload(token: string | undefined): UsagePayload | null {
 function makeStatus(used: number): UsageStatus {
   const definition = PLANS.free;
   const safeUsed = Math.max(0, Math.floor(used));
+  const paywall = safeUsed >= definition.searchLimit;
   return {
     plan: "free",
     planName: definition.name,
@@ -68,7 +72,9 @@ function makeStatus(used: number): UsageStatus {
     remaining: Math.max(0, definition.searchLimit - safeUsed),
     cadence: "lifetime",
     period: "lifetime",
-    paywall: safeUsed >= definition.searchLimit,
+    paywall,
+    challengeRequired: !paywall && safeUsed >= CAPTCHA_AFTER_FREE_SEARCHES,
+    challengeAfter: CAPTCHA_AFTER_FREE_SEARCHES,
   };
 }
 
