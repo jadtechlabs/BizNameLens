@@ -1,6 +1,5 @@
 export const PLAN_KEYS = ["free", "starter", "pro", "business"] as const;
 export type PlanKey = (typeof PLAN_KEYS)[number];
-export type PaidPlanKey = Exclude<PlanKey, "free">;
 
 export type PlanDefinition = {
   key: PlanKey;
@@ -47,29 +46,3 @@ export const PLANS: Record<PlanKey, PlanDefinition> = {
     description: "For agencies and teams screening names at higher volume.",
   },
 };
-
-export function isPlanKey(value: unknown): value is PlanKey {
-  return typeof value === "string" && (PLAN_KEYS as readonly string[]).includes(value);
-}
-
-export function isPaidPlanKey(value: unknown): value is PaidPlanKey {
-  return isPlanKey(value) && value !== "free";
-}
-
-export function planPriceEnv(plan: PaidPlanKey) {
-  if (plan === "starter") return "STRIPE_PRICE_STARTER";
-  if (plan === "pro") return "STRIPE_PRICE_PRO";
-  return "STRIPE_PRICE_BUSINESS";
-}
-
-export function priceIdForPlan(plan: PaidPlanKey) {
-  return process.env[planPriceEnv(plan)]?.trim() || "";
-}
-
-export function planFromPriceId(priceId: string | undefined): PaidPlanKey | null {
-  if (!priceId) return null;
-  for (const key of ["starter", "pro", "business"] as const) {
-    if (priceIdForPlan(key) === priceId) return key;
-  }
-  return null;
-}
