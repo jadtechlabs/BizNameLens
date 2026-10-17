@@ -97,7 +97,7 @@ export async function searchTrademarks(name: string): Promise<TrademarkResult> {
     const body = {
       query: {
         query_string: {
-          query: `CM:\"${phrase}\" AND LD:true`,
+          query: `CM:"${phrase}" AND LD:true`,
           default_operator: "AND",
         },
       },
