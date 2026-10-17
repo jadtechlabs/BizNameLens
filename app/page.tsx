@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   AtSign,
@@ -17,6 +17,7 @@ import {
   Sparkles,
   TriangleAlert,
 } from "lucide-react";
+import { PLANS, type PlanKey } from "../lib/plans";
 
 type DomainResult = {
   domain: string;
@@ -66,6 +67,18 @@ type SocialResult = {
   note?: string;
 };
 
+type UsageStatus = {
+  plan: "free";
+  planName: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  cadence: "lifetime";
+  period: "lifetime";
+  paywall: boolean;
+  billingConfigured?: boolean;
+};
+
 type ScreeningResult = {
   name: string;
   industry: string;
@@ -77,6 +90,7 @@ type ScreeningResult = {
   registry: RegistryResult;
   trademarks: TrademarkResult;
   social: SocialResult[];
+  usage?: UsageStatus;
   checkedAt: string;
   sources: {
     virginiaScc: string;
@@ -105,6 +119,8 @@ const industries = [
   "Media / Creative",
   "Other",
 ];
+
+const planOrder: PlanKey[] = ["free", "starter", "pro", "business"];
 
 function Brand() {
   return (
@@ -169,18 +185,54 @@ function ScoreRing({ score }: { score: number }) {
   );
 }
 
+function planFeatures(plan: PlanKey) {
+  if (plan === "free") return ["10 business-name searches total", "Full live-source screening", "No card required"];
+  if (plan === "starter") return ["100 searches each month", "Full live-source screening", "For active founders"];
+  if (plan === "pro") return ["500 searches each month", "Full live-source screening", "For repeat naming work"];
+  return ["2,000 searches each month", "Full live-source screening", "For agencies and teams"];
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [industry, setIndustry] = useState(industries[0]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<ScreeningResult | null>(null);
+  const [usage, setUsage] = useState<UsageStatus | null>(null);
+  const [usageLoading, setUsageLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/usage", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "Unable to load free-search usage.");
+        if (active) setUsage(data);
+      })
+      .catch(() => {
+        if (active) setUsage(null);
+      })
+      .finally(() => {
+        if (active) setUsageLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
 
   const recommendation = useMemo(() => result?.recommendation ?? "A strong name should survive more than one check. BizNameLens brings the important signals together before you file, buy a domain, or invest in a brand.", [result]);
+
+  function openPricing() {
+    setTimeout(() => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth", block: "start" }), 20);
+  }
 
   async function runCheck(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+
+    if (usage?.paywall) {
+      openPricing();
+      return;
+    }
+
     setLoading(true);
     try {
       const response = await fetch("/api/check", {
@@ -189,8 +241,16 @@ export default function Home() {
         body: JSON.stringify({ name, industry, state: "Virginia" }),
       });
       const data = await response.json();
+
+      if (response.status === 402 || data?.code === "FREE_LIMIT_REACHED") {
+        if (data?.usage) setUsage(data.usage);
+        openPricing();
+        return;
+      }
+
       if (!response.ok) throw new Error(data?.error || "Unable to run the check.");
       setResult(data);
+      if (data?.usage) setUsage(data.usage);
       setTimeout(() => document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to run the check.");
@@ -201,6 +261,11 @@ export default function Home() {
 
   const registryRows = result ? [...result.registry.exactMatches, ...result.registry.similarMatches].slice(0, 3) : [];
   const trademarkRows = result ? [...result.trademarks.exactMatches, ...result.trademarks.similarMatches].slice(0, 3) : [];
+  const freeUsed = usage?.used ?? 0;
+  const freeLimit = usage?.limit ?? PLANS.free.searchLimit;
+  const freeRemaining = usage?.remaining ?? freeLimit;
+  const usagePercent = Math.min(100, Math.round((freeUsed / freeLimit) * 100));
+  const paywalled = Boolean(usage?.paywall);
 
   return (
     <main id="top">
@@ -211,9 +276,10 @@ export default function Home() {
           <nav className="desktop-nav" aria-label="Primary navigation">
             <a href="#how-it-works">How it works</a>
             <a href="#checks">What we check</a>
+            <a href="#pricing">Pricing</a>
             <a href="#faq">FAQ</a>
           </nav>
-          <a className="nav-cta" href="#search">Check a name <ArrowRight size={16} /></a>
+          <a className="nav-cta" href={paywalled ? "#pricing" : "#search"}>{paywalled ? "View plans" : "Check a name"} <ArrowRight size={16} /></a>
         </div>
       </header>
 
@@ -227,26 +293,35 @@ export default function Home() {
           <div className="hero-proof">
             <span><CheckCircle2 size={16} /> Live USPTO data</span>
             <span><CheckCircle2 size={16} /> Live domain checks</span>
-            <span><CheckCircle2 size={16} /> Founder-friendly results</span>
+            <span><CheckCircle2 size={16} /> 10 free name searches</span>
           </div>
         </div>
 
-        <form className="search-panel" id="search" onSubmit={runCheck}>
+        <form className={`search-panel ${paywalled ? "search-panel-paywalled" : ""}`} id="search" onSubmit={runCheck}>
           <div className="panel-accent" />
           <div className="search-heading">
             <span className="search-icon-wrap"><Search size={20} /></span>
-            <div><p>Start with a name</p><span>We&apos;ll pull the important signals into one view.</span></div>
+            <div><p>{paywalled ? "Free searches used" : "Start with a name"}</p><span>{paywalled ? "Choose a plan to continue screening names." : "We'll pull the important signals into one view."}</span></div>
           </div>
+
+          <div className="usage-meter" aria-live="polite">
+            <div className="usage-meter-copy">
+              <span>{usageLoading ? "Checking free usage…" : paywalled ? "10 of 10 free searches used" : `${freeRemaining} free search${freeRemaining === 1 ? "" : "es"} remaining`}</span>
+              {!usageLoading && <small>{freeUsed}/{freeLimit} used</small>}
+            </div>
+            <div className="usage-track" aria-hidden="true"><span style={{ width: `${usagePercent}%` }} /></div>
+          </div>
+
           <label className="field-label" htmlFor="business-name">Business name</label>
           <div className="name-field">
-            <input id="business-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Elara" autoComplete="organization" required />
+            <input id="business-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Elara" autoComplete="organization" required disabled={paywalled} />
             <Sparkles size={18} />
           </div>
           <div className="field-grid">
             <label className="field-group">
               <span className="field-label">Industry</span>
               <span className="select-wrap">
-                <select value={industry} onChange={(event) => setIndustry(event.target.value)}>{industries.map((item) => <option key={item}>{item}</option>)}</select>
+                <select value={industry} onChange={(event) => setIndustry(event.target.value)} disabled={paywalled}>{industries.map((item) => <option key={item}>{item}</option>)}</select>
                 <ChevronDown size={16} />
               </span>
             </label>
@@ -255,13 +330,18 @@ export default function Home() {
               <span className="select-wrap locked-select"><select value="Virginia" disabled><option>Virginia</option></select><span className="beta-tag">MVP</span></span>
             </label>
           </div>
-          <button className="primary-button" type="submit" disabled={loading}>
-            {loading ? <span className="spinner" /> : <Search size={18} />}
-            {loading ? "Pulling live sources..." : "Analyze my business name"}
-            {!loading && <ArrowRight size={18} />}
-          </button>
+
+          {paywalled ? (
+            <a className="primary-button paywall-button" href="#pricing">View pricing plans <ArrowRight size={18} /></a>
+          ) : (
+            <button className="primary-button" type="submit" disabled={loading || usageLoading}>
+              {loading ? <span className="spinner" /> : <Search size={18} />}
+              {loading ? "Pulling live sources..." : "Analyze my business name"}
+              {!loading && <ArrowRight size={18} />}
+            </button>
+          )}
           {error && <p className="form-error">{error}</p>}
-          <p className="search-disclaimer">Screening tool only. Not legal advice or a guarantee of availability.</p>
+          <p className="search-disclaimer">10 free searches per browser for this MVP. Screening tool only; not legal advice or a guarantee of availability.</p>
         </form>
       </section>
 
@@ -364,6 +444,46 @@ export default function Home() {
         </div>
       </section>
 
+      <section className="pricing-section shell" id="pricing">
+        <div className="center-heading pricing-heading">
+          <span className="section-kicker">Simple founder-friendly pricing</span>
+          <h2>Start free. Pay only when you need more searches.</h2>
+          <p>Every plan uses the same core screening engine. Paid tiers simply increase monthly search capacity.</p>
+        </div>
+        {paywalled && (
+          <div className="paywall-callout">
+            <ShieldCheck size={20} />
+            <div><strong>You’ve used all 10 free searches.</strong><span>Paid billing is intentionally not active yet. The plans below show the intended SaaS pricing.</span></div>
+          </div>
+        )}
+        <div className="pricing-grid">
+          {planOrder.map((key) => {
+            const plan = PLANS[key];
+            const isFree = key === "free";
+            return (
+              <article className={`pricing-card ${plan.highlighted ? "pricing-card-featured" : ""}`} key={key}>
+                {plan.highlighted && <span className="popular-tag">Most popular</span>}
+                <div className="pricing-card-head">
+                  <span className="pricing-plan-name">{plan.name}</span>
+                  <div className="pricing-price"><strong>${plan.priceMonthly}</strong>{!isFree && <span>/mo</span>}</div>
+                  <p>{plan.description}</p>
+                </div>
+                <div className="pricing-divider" />
+                <ul>
+                  {planFeatures(key).map((feature) => <li key={feature}><Check size={16} /> {feature}</li>)}
+                </ul>
+                {isFree ? (
+                  <a className="pricing-cta pricing-cta-secondary" href="#search">{paywalled ? "Free limit reached" : "Use free plan"}</a>
+                ) : (
+                  <button className="pricing-cta" type="button" disabled>Billing coming soon</button>
+                )}
+              </article>
+            );
+          })}
+        </div>
+        <p className="pricing-footnote">No payment processor is connected yet. Pricing can be adjusted before billing goes live.</p>
+      </section>
+
       <section className="promise-section shell">
         <div className="promise-card">
           <div className="promise-copy">
@@ -379,6 +499,7 @@ export default function Home() {
       <section className="faq-section shell" id="faq">
         <div className="center-heading"><span className="section-kicker">FAQ</span><h2>Useful screening, with honest limits.</h2></div>
         <div className="faq-grid">
+          <article><h3>How many searches are free?</h3><p>The MVP includes 10 free business-name searches per browser. The server signs the usage counter so it cannot be changed by simply editing browser storage.</p></article>
           <article><h3>Is the USPTO result live?</h3><p>Yes when the provider reports “Live data.” BizNameLens uses the public search backend used by the official USPTO Trademark Search application, which is undocumented and may change.</p></article>
           <article><h3>Why can Virginia SCC still need confirmation?</h3><p>The official CIS name search is protected by reCAPTCHA and does not publish a simple documented public API. Automated matches can come from SCC-derived open-data mirrors, while CIS remains the source to confirm before filing.</p></article>
           <article><h3>Is a high score legal clearance?</h3><p>No. Trademark conflicts depend on similarity, goods and services, geography, and other legal factors. The score is a founder-friendly screening signal, not legal advice.</p></article>
@@ -386,7 +507,7 @@ export default function Home() {
       </section>
 
       <section className="closing-section shell">
-        <div className="closing-card"><span className="section-kicker">Ready to test a name?</span><h2>Find the weak spots before they get expensive.</h2><a className="primary-button" href="#search">Analyze a business name <ArrowRight size={18} /></a></div>
+        <div className="closing-card"><span className="section-kicker">Ready to test a name?</span><h2>{paywalled ? "You’ve reached the free limit." : "Find the weak spots before they get expensive."}</h2><a className="primary-button" href={paywalled ? "#pricing" : "#search"}>{paywalled ? "View plans" : "Analyze a business name"} <ArrowRight size={18} /></a></div>
       </section>
 
       <footer className="site-footer"><div className="shell"><Brand /><p>Business-name screening for founders. Always verify official records before filing or relying on a result.</p></div></footer>

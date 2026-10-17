@@ -1,3 +1,4 @@
+import { checkBotId } from "botid/server";
 import { NextRequest, NextResponse } from "next/server";
 import { applyIndustryRelevance, hasHighRelevanceTrademark, trademarkRiskPenalty } from "../../../lib/industry-risk";
 import { checkDomains } from "../../../lib/providers/domains";
@@ -5,6 +6,11 @@ import { checkSocialHandles } from "../../../lib/providers/social";
 import { searchTrademarks } from "../../../lib/providers/trademarks";
 import { searchVirginiaRegistry } from "../../../lib/providers/virginia";
 import type { DomainResult, RegistryResult, SocialResult, TrademarkResult } from "../../../lib/providers/types";
+import { checkNameSearchRateLimit } from "../../../lib/rate-limit";
+import { clearTurnstileCookie, readTurnstileToken, verifyTurnstileToken } from "../../../lib/turnstile";
+import { applyUsageCookies, consumeSearch, getUsageStatus } from "../../../lib/usage";
+
+export const runtime = "nodejs";
 
 function normalizeName(value: string) {
   return value.trim().replace(/\s+/g, " ").slice(0, 80);
@@ -92,7 +98,44 @@ function buildRecommendation(name: string, industry: string, registry: RegistryR
   return `${name} has a promising early screening profile for ${industry} from the currently connected sources. Confirm the official Virginia SCC result and review the underlying USPTO records before committing money to the brand.`;
 }
 
+function jsonWithClearedTurnstile(body: object, status: number) {
+  const response = NextResponse.json(body, { status });
+  clearTurnstileCookie(response);
+  return response;
+}
+
 export async function POST(request: NextRequest) {
+  const rateLimit = checkNameSearchRateLimit(request);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      {
+        error: "Too many name searches from this network. Please wait and try again.",
+        code: "RATE_LIMITED",
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
+  }
+
+  try {
+    const bot = await checkBotId();
+    if (bot.isBot) {
+      return NextResponse.json(
+        { error: "Automated traffic is not allowed on the name-check endpoint.", code: "BOT_DETECTED" },
+        { status: 403 },
+      );
+    }
+  } catch {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        { error: "Bot protection is temporarily unavailable. Please try again.", code: "BOT_PROTECTION_UNAVAILABLE" },
+        { status: 503 },
+      );
+    }
+  }
+
   const body = await request.json().catch(() => ({}));
   const name = normalizeName(String(body?.name ?? ""));
   const industry = normalizeName(String(body?.industry ?? "Other"));
@@ -105,6 +148,74 @@ export async function POST(request: NextRequest) {
   const stem = domainStem(name);
   if (!stem) {
     return NextResponse.json({ error: "Enter a business name using letters or numbers." }, { status: 400 });
+  }
+
+  let currentUsage;
+  try {
+    currentUsage = getUsageStatus(request);
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Usage tracking is unavailable." },
+      { status: 500 },
+    );
+  }
+
+  if (currentUsage.status.paywall) {
+    return NextResponse.json(
+      {
+        error: "You have used all 10 free business-name searches.",
+        code: "FREE_LIMIT_REACHED",
+        usage: currentUsage.status,
+      },
+      { status: 402 },
+    );
+  }
+
+  if (currentUsage.status.challengeRequired) {
+    const turnstileToken = readTurnstileToken(request);
+    if (!turnstileToken) {
+      return NextResponse.json(
+        {
+          error: "Complete the human verification to continue.",
+          code: "HUMAN_VERIFICATION_REQUIRED",
+          usage: currentUsage.status,
+        },
+        { status: 428 },
+      );
+    }
+
+    const human = await verifyTurnstileToken(request, turnstileToken);
+    if (!human.ok) {
+      return jsonWithClearedTurnstile(
+        {
+          error: human.reason,
+          code: "HUMAN_VERIFICATION_FAILED",
+          usage: currentUsage.status,
+        },
+        403,
+      );
+    }
+  }
+
+  let usage;
+  try {
+    usage = consumeSearch(request);
+  } catch (error) {
+    return jsonWithClearedTurnstile(
+      { error: error instanceof Error ? error.message : "Usage tracking is unavailable." },
+      500,
+    );
+  }
+
+  if (!usage.allowed) {
+    return jsonWithClearedTurnstile(
+      {
+        error: "You have used all 10 free business-name searches.",
+        code: "FREE_LIMIT_REACHED",
+        usage: usage.status,
+      },
+      402,
+    );
   }
 
   const candidateDomains = [
@@ -126,7 +237,7 @@ export async function POST(request: NextRequest) {
   const score = scoreName(name, domains, registry, trademarks, social);
   const risk = riskLabel(score, registry, trademarks);
 
-  return NextResponse.json({
+  const response = NextResponse.json({
     name,
     industry,
     state,
@@ -137,6 +248,7 @@ export async function POST(request: NextRequest) {
     registry,
     trademarks,
     social,
+    usage: usage.status,
     checkedAt: new Date().toISOString(),
     sources: {
       virginiaScc: "https://cis.scc.virginia.gov/EntitySearch/Index",
@@ -156,4 +268,8 @@ export async function POST(request: NextRequest) {
       score: "The BizName Score is a preliminary screening indicator. Industry relevance can change the weight of trademark candidates, but the score is not a legal opinion or a percentage chance of trademark approval.",
     },
   });
+
+  applyUsageCookies(response, usage);
+  if (currentUsage.status.challengeRequired) clearTurnstileCookie(response);
+  return response;
 }

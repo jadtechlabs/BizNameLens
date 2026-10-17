@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./saas.css";
+import SearchSecurityGate from "./search-security-gate";
 
 export const metadata: Metadata = {
   title: "BizNameLens | Know Before You Name It",
@@ -10,7 +12,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <SearchSecurityGate />
+        {children}
+      </body>
     </html>
   );
 }
