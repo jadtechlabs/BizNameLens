@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./saas.css";
 
 export const metadata: Metadata = {
   title: "BizNameLens | Know Before You Name It",
