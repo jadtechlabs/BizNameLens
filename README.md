@@ -8,20 +8,68 @@ BizNameLens is a Virginia-first business-name screening experience designed to a
 
 The MVP brings together the signals that matter before a founder files, buys a domain, or invests in branding:
 
-- Virginia SCC entity-registration pathway
-- Federal trademark screening pathway (USPTO)
-- Live `.com` RDAP availability signal
+- Virginia entity-name matching
+- Live federal trademark candidate screening
+- Live domain availability through RDAP
 - Alternate domain ideas
-- Social/company-presence pathways
+- Conservative social/company-presence probes
 - A founder-friendly BizName Score and recommendation
 
-## Current MVP
+## Live data integrations
 
-The site is built with Next.js, React, TypeScript, and custom responsive CSS. The homepage includes a complete interactive search experience and a results dashboard.
+### USPTO Trademark Search
 
-The `.com` domain check is live through Verisign RDAP. Virginia SCC and USPTO results currently link to the official source while reliable automated connectors are developed. BizNameLens deliberately does **not** invent a green/red legal verdict when a source cannot be checked reliably.
+BizNameLens discovers and queries the public search service used by the official USPTO Trademark Search web application. It returns live candidate marks, distinguishes exact wording from similar results, and links serial numbers to TSDR for record review.
 
-The **BizName Score is a preliminary screening indicator, not a legal-clearance percentage or legal opinion.**
+No USPTO API key is required for the Trademark Search connector. Because the web application's search service is undocumented and versioned, BizNameLens discovers its current service URL at runtime and fails safely to the official search page if the interface changes.
+
+### Domains
+
+Domain checks use the IANA RDAP bootstrap registry to locate the authoritative RDAP service for each top-level domain. A 404 from the authoritative RDAP service is treated as an availability signal; a successful domain record is treated as registered.
+
+The MVP currently checks the primary `.com`, several `.com` variations, and `.net`.
+
+### Virginia business entities
+
+Virginia's official CIS entity/name search remains the source of record. Its live public search is protected by reCAPTCHA and does not expose a documented public name-search API suitable for this app.
+
+BizNameLens therefore includes an adapter for Virginia SCC-derived LLC and corporation datasets exposed by `opendata.best`. To enable it, obtain an API key from that provider and configure:
+
+```bash
+OPENDATA_API_KEY=your_key_here
+```
+
+Without this key the rest of BizNameLens still works; the Virginia card reports that automated state data is not configured and links directly to the official SCC search for confirmation.
+
+### Social handles
+
+Instagram, X, and LinkedIn do not provide a simple dependable public handle-availability API for this use case. BizNameLens uses conservative public-page probes: only clear not-found/profile signals are classified, and blocked/login/generic responses are reported as **Unknown** rather than guessed.
+
+## Environment variables
+
+Copy `.env.example` to `.env.local` for local development:
+
+```bash
+cp .env.example .env.local
+```
+
+Available variables:
+
+```bash
+# Optional; enables automated Virginia entity matching
+OPENDATA_API_KEY=
+
+# Optional override; normally leave at the official USPTO config URL
+TMSEARCH_CONFIG_URL=https://tmsearch.uspto.gov/configuration.json
+```
+
+For Vercel, add `OPENDATA_API_KEY` under Project Settings → Environment Variables and redeploy.
+
+## BizName Score
+
+The score combines name length/distinctiveness, domain availability, returned Virginia entity matches, live federal trademark candidates, and conservative social signals.
+
+The **BizName Score is a preliminary screening indicator, not a legal-clearance percentage or legal opinion.** A high score does not replace a proper trademark clearance analysis or official state filing check.
 
 ## Run locally
 
@@ -39,16 +87,18 @@ npm run build
 npm start
 ```
 
+GitHub Actions runs TypeScript validation and a production Next.js build on pushes to `main`.
+
 ## Product roadmap
 
-1. Automated Virginia SCC name matching and similarity screening
-2. Automated USPTO live/pending trademark screening
-3. More domain extensions and better alternative-name generation
-4. Social-handle checks where reliable APIs/signals exist
-5. Similar-company and broader web-presence screening
-6. State-by-state expansion after the Virginia workflow is strong
-7. Saved reports, shareable results, and founder decision history
+1. Improve Virginia registry freshness and add a direct official integration if Virginia publishes a supported API
+2. Add industry/class-aware trademark similarity scoring
+3. Expand domain extensions and alternative-name generation
+4. Improve social verification through supported APIs where available
+5. Add broader web/company-presence screening
+6. Expand state-by-state after the Virginia workflow is strong
+7. Add saved reports, shareable results, and founder decision history
 
 ## Design principle
 
-BizNameLens should feel simple enough for a first-time founder while staying honest about uncertainty. When a check cannot be completed reliably, the product should say so and point to the official source instead of fabricating certainty.
+BizNameLens should feel simple enough for a first-time founder while staying honest about uncertainty. When a source cannot be checked reliably, the product should say so and point to the official source instead of fabricating certainty.
