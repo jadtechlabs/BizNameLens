@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getUsageStatus, applyUsageCookies } from "../../../lib/usage";
-import { stripeConfigured } from "../../../lib/stripe";
+import { getUsageStatus } from "../../../lib/usage";
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
   try {
-    const resolution = await getUsageStatus(request);
-    const response = NextResponse.json({
+    const resolution = getUsageStatus(request);
+    return NextResponse.json({
       ...resolution.status,
-      billingConfigured: stripeConfigured(),
+      billingConfigured: false,
     });
-    applyUsageCookies(response, resolution);
-    return response;
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unable to read usage status." },
