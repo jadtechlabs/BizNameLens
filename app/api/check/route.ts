@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { applyIndustryRelevance, hasHighRelevanceTrademark, trademarkRiskPenalty } from "../../../lib/industry-risk";
 import { checkDomains } from "../../../lib/providers/domains";
 import { checkSocialHandles } from "../../../lib/providers/social";
 import { searchTrademarks } from "../../../lib/providers/trademarks";
@@ -39,8 +40,7 @@ function scoreName(
   if (activeRegistryExact.length) score -= 26;
   score -= Math.min(14, registry.similarMatches.length * 3);
 
-  if (trademarks.exactMatches.length) score -= 32;
-  score -= Math.min(22, trademarks.similarMatches.length * 5);
+  score -= trademarkRiskPenalty(trademarks);
 
   const registeredSocials = social.filter((item) => item.status === "registered").length;
   score -= Math.min(5, registeredSocials * 2);
@@ -51,28 +51,45 @@ function scoreName(
   return Math.max(10, Math.min(96, score));
 }
 
-function riskLabel(score: number, registry: RegistryResult, trademarks: TrademarkResult) {
-  if (registry.exactMatches.length || trademarks.exactMatches.length) return "Higher screening risk";
-  if (score >= 85) return "Promising early screen";
-  if (score >= 68) return "Moderate screening risk";
-  return "Higher screening risk";
+function materialTrademarkExact(trademarks: TrademarkResult) {
+  return trademarks.exactMatches.some((item) => item.industryRelevance === "high" || item.industryRelevance === "medium" || item.industryRelevance === "unknown");
 }
 
-function buildRecommendation(name: string, registry: RegistryResult, trademarks: TrademarkResult, domains: DomainResult[]) {
+function riskLabel(score: number, registry: RegistryResult, trademarks: TrademarkResult) {
+  if (registry.exactMatches.length || materialTrademarkExact(trademarks)) return "Higher screening risk";
+  if (hasHighRelevanceTrademark(trademarks) || score < 68) return "Higher screening risk";
+  if (score >= 85) return "Promising early screen";
+  return "Moderate screening risk";
+}
+
+function buildRecommendation(name: string, industry: string, registry: RegistryResult, trademarks: TrademarkResult, domains: DomainResult[]) {
   const com = domains.find((item) => item.domain.endsWith(".com"));
-  if (trademarks.exactMatches.length) {
-    return `${name} has one or more live federal trademark results with the same normalized wording. Review the owners, classes, and goods/services before investing in this name.`;
+  const highExact = trademarks.exactMatches.filter((item) => item.industryRelevance === "high");
+  const mediumExact = trademarks.exactMatches.filter((item) => item.industryRelevance === "medium" || item.industryRelevance === "unknown");
+  const highSimilar = trademarks.similarMatches.filter((item) => item.industryRelevance === "high");
+
+  if (highExact.length) {
+    return `${name} has live federal trademark results with the same normalized wording and strong overlap with ${industry}. Treat this as a significant screening flag and review the owners, classes, and goods/services before investing in the name.`;
+  }
+  if (mediumExact.length) {
+    return `${name} has live exact-wording federal marks that may overlap with ${industry}. The industry connection is not as strong as the highest-risk matches, but these records deserve careful review before filing or branding.`;
   }
   if (registry.exactMatches.length) {
     return `${name} has one or more Virginia entity-name matches in the connected registry dataset. Confirm the current record in Virginia SCC and consider a more distinctive variation.`;
   }
+  if (highSimilar.length) {
+    return `${name} has similar live federal marks with meaningful ${industry} overlap. Even without an exact wording match, related goods/services can matter, so review these candidates before committing to the brand.`;
+  }
+  if (trademarks.exactMatches.length) {
+    return `${name} has exact-wording federal marks, but their returned classes and goods/services show limited obvious overlap with ${industry}. That lowers the screening weight, not the need for review.`;
+  }
   if (trademarks.similarMatches.length || registry.similarMatches.length) {
-    return `${name} has no exact conflict in the returned automated results, but similar business or trademark uses deserve review before filing or branding.`;
+    return `${name} has no high-priority exact conflict in the returned automated results, but similar business or trademark uses deserve review before filing or branding.`;
   }
   if (com?.status === "registered") {
-    return `${name} has a relatively clean returned legal-data screen, but the primary .com is already registered. Consider a strong domain variation and still verify the official registries before filing.`;
+    return `${name} has a relatively clean returned legal-data screen for ${industry}, but the primary .com is already registered. Consider a strong domain variation and still verify the official registries before filing.`;
   }
-  return `${name} has a promising early screening profile from the currently connected sources. Confirm the official Virginia SCC result and review the underlying USPTO records before committing money to the brand.`;
+  return `${name} has a promising early screening profile for ${industry} from the currently connected sources. Confirm the official Virginia SCC result and review the underlying USPTO records before committing money to the brand.`;
 }
 
 export async function POST(request: NextRequest) {
@@ -98,13 +115,14 @@ export async function POST(request: NextRequest) {
     `${stem}.net`,
   ];
 
-  const [domains, registry, trademarks, social] = await Promise.all([
+  const [domains, registry, rawTrademarks, social] = await Promise.all([
     checkDomains(candidateDomains),
     searchVirginiaRegistry(name),
     searchTrademarks(name),
     checkSocialHandles(name),
   ]);
 
+  const trademarks = applyIndustryRelevance(rawTrademarks, industry);
   const score = scoreName(name, domains, registry, trademarks, social);
   const risk = riskLabel(score, registry, trademarks);
 
@@ -114,7 +132,7 @@ export async function POST(request: NextRequest) {
     state,
     score,
     risk,
-    recommendation: buildRecommendation(name, registry, trademarks, domains),
+    recommendation: buildRecommendation(name, industry, registry, trademarks, domains),
     domains,
     registry,
     trademarks,
@@ -132,10 +150,10 @@ export async function POST(request: NextRequest) {
         ? "Virginia SCC's live search is protected by reCAPTCHA and has no documented public JSON API. BizNameLens supports a weekly Virginia SCC-derived dataset provider when OPENDATA_API_KEY is configured, and always links to the official SCC source for final confirmation."
         : "Virginia entity matches come from an SCC-derived dataset provider. Always confirm the current official record in CIS before filing.",
       trademark: trademarks.state === "ok"
-        ? "Federal trademark candidates are pulled from the public backend used by the official USPTO Trademark Search application. The interface is undocumented and can change; final clearance requires reviewing the records, goods/services, and similarity."
+        ? `Federal trademark candidates are pulled from the public backend used by the official USPTO Trademark Search application. BizNameLens now weights returned classes and goods/services against ${industry}; this is screening context, not a legal conclusion.`
         : "The live USPTO search connector was unavailable for this request. Use the official Trademark Search link for confirmation.",
       social: "Social checks are deliberately conservative because major networks frequently return login or anti-bot pages. Unknown means BizNameLens could not verify the handle safely, not that it is available.",
-      score: "The BizName Score is a preliminary screening indicator, not a legal opinion or a percentage chance of trademark approval.",
+      score: "The BizName Score is a preliminary screening indicator. Industry relevance can change the weight of trademark candidates, but the score is not a legal opinion or a percentage chance of trademark approval.",
     },
   });
 }
