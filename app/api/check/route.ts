@@ -6,6 +6,7 @@ import { checkSocialHandles } from "../../../lib/providers/social";
 import { searchTrademarks } from "../../../lib/providers/trademarks";
 import { searchVirginiaRegistry } from "../../../lib/providers/virginia";
 import type { DomainResult, RegistryResult, SocialResult, TrademarkResult } from "../../../lib/providers/types";
+import { checkNameSearchRateLimit } from "../../../lib/rate-limit";
 import { clearTurnstileCookie, readTurnstileToken, verifyTurnstileToken } from "../../../lib/turnstile";
 import { applyUsageCookies, consumeSearch, getUsageStatus } from "../../../lib/usage";
 
@@ -104,6 +105,20 @@ function jsonWithClearedTurnstile(body: object, status: number) {
 }
 
 export async function POST(request: NextRequest) {
+  const rateLimit = checkNameSearchRateLimit(request);
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      {
+        error: "Too many name searches from this network. Please wait and try again.",
+        code: "RATE_LIMITED",
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
+  }
+
   try {
     const bot = await checkBotId();
     if (bot.isBot) {
